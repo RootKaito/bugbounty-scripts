@@ -1,0 +1,34 @@
+# Copie este arquivo para programs/<nome-do-programa>.yaml e preencha
+# com os dados REAIS da página de política do programa no HackerOne.
+# Isso é o que autoriza (ou não) cada script a agir contra um alvo.
+
+program: "Nome do programa"
+platform: hackerone
+handle: "slug-no-hackerone"          # ex: https://hackerone.com/<handle>
+policy_url: "https://hackerone.com/<handle>"
+
+# Padrões aceitos: domínio exato ("example.com") ou wildcard ("*.example.com").
+in_scope:
+  - "example.com"
+  - "*.example.com"
+
+# Qualquer coisa aqui é removida do resultado mesmo que bata com in_scope
+# (ex: subdomínio de terceiro, ambiente de staging que o programa exclui).
+out_of_scope:
+  - "staging.example.com"
+
+rules:
+  # Muitos programas web NÃO autorizam port scan (nmap) — confira a política.
+  allow_port_scan: false
+  # Crawling (katana) é parecido com navegar no site, mas ainda é automatizado.
+  allow_crawl: true
+  # Content discovery (ffuf) é mais ruidoso: muitas requisições por segundo.
+  allow_content_discovery: false
+  allow_active_vuln_scan: true
+  # Respeite o rate limit que a política pedir; isso vira -rate-limit do nuclei.
+  rate_limit: 5
+  notes: >
+    Leia a política completa em policy_url antes de rodar qualquer coisa.
+    Preste atenção em: tipos de teste proibidos (DoS, engenharia social,
+    testes automatizados sem throttling), ativos de terceiros, programa
+    de disclosure (prazo de embargo antes de publicar).

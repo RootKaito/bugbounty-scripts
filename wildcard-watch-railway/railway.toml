@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# A cada 6 horas, UTC. Ajuste se quiser outra frequência.
+cronSchedule = "0 */6 * * *"
+restartPolicyType = "NEVER"

@@ -1,0 +1,7 @@
+output/
+findings/
+programs/*.yaml
+!programs/_template.yaml
+__pycache__/
+*.pyc
+.venv/
