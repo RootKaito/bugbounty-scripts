@@ -201,7 +201,7 @@ def resolve_hosts(hosts: list[str], outdir: Path) -> list[str]:
     try:
         r = subprocess.run(
             ["dnsx", "-silent"], input="\n".join(hosts),
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=max(120, len(hosts) // 20),
         )
     except Exception as e:
         log(f"dnsx falhou: {e}")
@@ -298,7 +298,7 @@ def _probe_targets_pdhttpx(targets: list[str]) -> list[dict] | None:
     try:
         r = subprocess.run(
             ["pdhttpx", "-silent", "-json", "-title", "-tech-detect", "-status-code"],
-            input="\n".join(targets), capture_output=True, text=True, timeout=300,
+            input="\n".join(targets), capture_output=True, text=True, timeout=max(300, len(targets) // 5),
         )
     except Exception as e:
         log(f"pdhttpx falhou: {e}")

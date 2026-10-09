@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -48,16 +49,35 @@ def scrape_cards() -> list[dict]:
         # --disable-dev-shm-usage: Docker limita /dev/shm a 64MB por
         # padrão, insuficiente pro Chromium — sem essa flag ele crasha
         # ("Target crashed") em containers como o do Railway.
+        # As flags abaixo cortam consumo de RAM adicional (sem imagem,
+        # sem extensões, sem GPU, heap do V8 limitado) — containers
+        # pequenos (Railway hobby/free) parecem estar derrubando o
+        # processo por OOM antes mesmo da página terminar de carregar.
         browser = p.chromium.launch(
             headless=True,
-            args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"],
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+            ],
         )
-        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        page = browser.new_page(viewport={"width": 1024, "height": 720})
         log(f"abrindo {URL}")
-        page.goto(URL, wait_until="networkidle", timeout=60000)
+        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2000)
 
         page.get_by_role("button", name="Bounty", exact=True).click()
-        page.wait_for_timeout(1500)
+        # espera o texto de verdade aparecer em vez de um tempo fixo chutado
+        # — timeout fixo ficou instável em container com menos recurso.
+        try:
+            page.get_by_text(re.compile(r"We found \d+ opportunities")).wait_for(timeout=15000)
+        except Exception as e:
+            log(f"  aviso: não confirmou o texto 'We found N opportunities' a tempo: {e}")
+        page.wait_for_timeout(500)
 
         target = None
         m = re.search(r"We found (\d+) opportunities", page.inner_text("body"))
@@ -76,15 +96,16 @@ def scrape_cards() -> list[dict]:
                 last_count = count
             if target and count >= target:
                 break
-            if stable_iters >= 4:
+            if stable_iters >= 10:
                 break
-            page.evaluate("""
-                window.scrollTo(0, document.body.scrollHeight);
-                document.querySelectorAll('*').forEach(el => {
-                    if (el.scrollHeight > el.clientHeight + 50) el.scrollTop = el.scrollHeight;
-                });
-            """)
-            page.wait_for_timeout(1200)
+            # document.body não é o elemento que rola nessa página (é uma
+            # div interna) — scrollIntoView no último card já carregado
+            # resolve isso sem precisar descobrir qual é o container, e
+            # sem o custo de um querySelectorAll('*') a cada volta.
+            cards = page.locator("a:has-text('See details')")
+            if count > 0:
+                cards.nth(count - 1).scroll_into_view_if_needed()
+            page.wait_for_timeout(1500)
 
         log(f"carregados {last_count} cards (alvo {target})")
 
@@ -245,6 +266,7 @@ def main():
         notify_discord(msg)
         notify_telegram(msg)
         log(f"  notificado: {p['name']}")
+        time.sleep(1.2)  # evita rate-limit do Discord/Telegram em lotes grandes
 
     save_state(state)
     log("concluído")

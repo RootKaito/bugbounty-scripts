@@ -5,3 +5,5 @@ programs/*.yaml
 __pycache__/
 *.pyc
 .venv/
+.claude/
+wildcard-watch-railway/local_state.json
