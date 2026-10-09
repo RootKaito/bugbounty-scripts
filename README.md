@@ -1,4 +1,11 @@
-# bugbounty-scripts
+<img src="assets/banner.svg" alt="bugbounty-scripts" width="100%" />
+
+<p>
+  <img src="https://img.shields.io/badge/python-3.11%2B-AE83FF?style=flat-square&labelColor=0D1119" alt="Python 3.11+" />
+  <img src="https://img.shields.io/badge/scope-gated-723EFF?style=flat-square&labelColor=0D1119" alt="Scope gated" />
+  <img src="https://img.shields.io/badge/wildcard%20watch-Railway-AE83FF?style=flat-square&labelColor=0D1119" alt="Wildcard Watch on Railway" />
+  <img src="https://img.shields.io/badge/platform-HackerOne-723EFF?style=flat-square&labelColor=0D1119" alt="HackerOne" />
+</p>
 
 Toolkit pessoal pra bug bounty: do recon automatizado até o aviso no
 Discord quando aparece um programa novo que vale a pena — tudo amarrado
