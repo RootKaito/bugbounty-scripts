@@ -66,6 +66,16 @@ def scrape_cards() -> list[dict]:
             ],
         )
         page = browser.new_page(viewport={"width": 1024, "height": 720})
+        # Bloqueia imagem/mídia/fonte no nível de rede (não decodifica nem
+        # pinta nada) — corta boa parte do consumo de memória do Chromium
+        # sem desligar CSS/JS como a flag --blink-settings=imagesEnabled
+        # fazia (que chegou a quebrar o layout numa tentativa anterior).
+        page.route(
+            "**/*",
+            lambda route: route.abort()
+            if route.request.resource_type in ("image", "media", "font")
+            else route.continue_(),
+        )
         log(f"abrindo {URL}")
         page.goto(URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(2000)
