@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# A cada 6 horas, UTC. Mesma frequência da versão Python.
-cronSchedule = "0 */6 * * *"
+# A cada hora, no minuto zero (UTC).
+cronSchedule = "0 * * * *"
 restartPolicyType = "NEVER"

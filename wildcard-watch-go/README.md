@@ -6,7 +6,7 @@ wildcard e eficiência de resposta mínima (70% por padrão).
 ## Railway
 
 Use `wildcard-watch-go` como diretório raiz do serviço. O Dockerfile compila o
-binário e o `railway.toml` agenda uma execução a cada seis horas, UTC.
+binário e o `railway.toml` agenda uma execução a cada hora, no minuto zero (UTC).
 Monte um volume persistente em `/data` e use apenas uma instância escrevendo no
 mesmo estado.
 
