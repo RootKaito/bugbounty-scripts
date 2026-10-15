@@ -646,13 +646,14 @@ func getenvInt(key string, fallback int) int {
 func run() error {
 	statePath := getenv("STATE_PATH", "/data/seen_programs.json")
 	discordWebhook := os.Getenv("DISCORD_WEBHOOK_URL")
-	if discordWebhook == "" {
-		return errors.New("DISCORD_WEBHOOK_URL não configurado")
-	}
+
 	telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	telegramChatID := os.Getenv("TELEGRAM_CHAT_ID")
 	if (telegramToken == "") != (telegramChatID == "") {
 		return errors.New("configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID juntos")
+	}
+	if discordWebhook == "" && telegramToken == "" {
+		return errors.New("configure ao menos um canal: Discord ou Telegram")
 	}
 	minResponseEfficiency := getenvInt("MIN_RESPONSE_EFFICIENCY", 70)
 
@@ -703,7 +704,7 @@ func run() error {
 		return err
 	}
 	for handle, p := range state {
-		if p.Delivery != nil && (!p.Delivery.Discord || (telegramToken != "" && !p.Delivery.Telegram)) {
+		if p.Delivery != nil && ((discordWebhook != "" && !p.Delivery.Discord) || (telegramToken != "" && !p.Delivery.Telegram)) {
 			pending = append(pending, handle)
 		}
 	}
@@ -712,7 +713,7 @@ func run() error {
 	for _, handle := range pending {
 		p := state[handle]
 		msg := buildMessage(p)
-		if !p.Delivery.Discord {
+		if discordWebhook != "" && !p.Delivery.Discord {
 			if err := notifyDiscord(discordWebhook, msg); err != nil {
 				logf("erro notificando discord (%s): %v", handle, err)
 				failed = true

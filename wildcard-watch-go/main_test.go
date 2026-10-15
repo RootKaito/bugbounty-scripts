@@ -208,3 +208,51 @@ func TestLiveCollection(t *testing.T) {
 	}
 	t.Logf("live: collected=%d candidates=%d", len(n), len(filterCandidates(n, 70)))
 }
+
+func TestTelegramOnly(t *testing.T) {
+	t.Setenv("DISCORD_WEBHOOK_URL", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "fake")
+	t.Setenv("TELEGRAM_CHAT_ID", "123")
+	p := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(p, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STATE_PATH", p)
+	old := http.DefaultTransport
+	defer func() { http.DefaultTransport = old }()
+	sends := 0
+	http.DefaultTransport = transport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.telegram.org" {
+			sends++
+			return response(`{"ok":true}`), nil
+		}
+		if r.URL.Host != "hackerone.com" {
+			t.Fatalf("unexpected destination: %s", r.URL.Host)
+		}
+		if r.Method == "GET" {
+			return response(`<meta name="csrf-token" content="fake"`), nil
+		}
+		return response(`{"data":{"opportunities_search":{"total_count":1,"nodes":[{"handle":"telegram-only","offers_bounties":true,"structured_scope_stats":{"WILDCARD":1},"cached_response_efficiency_percentage":90}]}}}`), nil
+	})
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(); err != nil {
+		t.Fatal(err)
+	}
+	if sends != 1 {
+		t.Fatalf("expected one Telegram send; got %d", sends)
+	}
+	state, err := loadState(p)
+	if err != nil || state["telegram-only"].Delivery == nil || !state["telegram-only"].Delivery.Telegram {
+		t.Fatal("missing acknowledgement", err)
+	}
+}
+func TestNoChannels(t *testing.T) {
+	t.Setenv("DISCORD_WEBHOOK_URL", "")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("TELEGRAM_CHAT_ID", "")
+	if err := run(); err == nil {
+		t.Fatal("expected missing-channel error")
+	}
+}

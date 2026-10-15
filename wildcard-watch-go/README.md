@@ -12,10 +12,12 @@ mesmo estado.
 
 Variáveis:
 
-- `DISCORD_WEBHOOK_URL`: obrigatório.
+- `DISCORD_WEBHOOK_URL`: opcional; deixe ausente para usar somente Telegram.
 - `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID`: opcionais; configure ambos juntos.
 - `MIN_RESPONSE_EFFICIENCY`: padrão `70`.
 - `STATE_PATH`: padrão `/data/seen_programs.json`.
+
+Configure pelo menos um canal. Para Telegram, configure token e chat ID juntos.
 
 ## Entrega e migração
 
