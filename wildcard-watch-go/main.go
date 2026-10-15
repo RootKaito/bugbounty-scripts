@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,7 @@ var csrfRegex = regexp.MustCompile(`<meta name="csrf-token" content="([^"]+)"`)
 // versão Python/Playwright pra Go, embutido no binário. bootstrapState usa
 // isso só na primeira execução contra um volume vazio, pra não re-notificar
 // como "novo" tudo que já tinha sido visto antes da troca.
+//
 //go:embed seed_state.json
 var seedState []byte
 
@@ -171,10 +173,10 @@ type opportunityNode struct {
 }
 
 type discoveryResponse struct {
-	Data struct {
-		OpportunitiesSearch struct {
+	Data *struct {
+		OpportunitiesSearch *struct {
 			Nodes      []opportunityNode `json:"nodes"`
-			TotalCount int               `json:"total_count"`
+			TotalCount *int              `json:"total_count"`
 		} `json:"opportunities_search"`
 	} `json:"data"`
 	Errors []struct {
@@ -185,15 +187,23 @@ type discoveryResponse struct {
 // ---------- programa (formato compatível com o state antigo em Python) ----------
 
 type Program struct {
-	Handle             string `json:"handle"`
-	Name               string `json:"name"`
-	URL                string `json:"url"`
-	ProgramType        string `json:"program_type"`
-	WildcardCount      int    `json:"wildcard_count"`
-	BountyMin          *int   `json:"bounty_min"`
-	BountyMax          *int   `json:"bounty_max"`
-	ResponseEfficiency *int   `json:"response_efficiency"`
-	FirstSeen          string `json:"first_seen"`
+	Handle             string    `json:"handle"`
+	Name               string    `json:"name"`
+	URL                string    `json:"url"`
+	ProgramType        string    `json:"program_type"`
+	WildcardCount      int       `json:"wildcard_count"`
+	BountyMin          *int      `json:"bounty_min"`
+	BountyMax          *int      `json:"bounty_max"`
+	ResponseEfficiency *int      `json:"response_efficiency"`
+	FirstSeen          string    `json:"first_seen"`
+	Delivery           *Delivery `json:"delivery,omitempty"`
+}
+
+// A nil delivery marks legacy records as already delivered. New records keep
+// a durable per-channel acknowledgement so partial failures can be retried.
+type Delivery struct {
+	Discord  bool `json:"discord"`
+	Telegram bool `json:"telegram"`
 }
 
 func toProgram(n opportunityNode, firstSeen string) Program {
@@ -231,7 +241,7 @@ func fetchCSRFToken(client *http.Client) (string, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 	if err != nil {
 		return "", fmt.Errorf("GET %s: %w", pageURL, err)
 	}
@@ -254,8 +264,8 @@ func fetchCSRFToken(client *http.Client) (string, error) {
 
 func fetchPage(client *http.Client, csrfToken string, from int) (discoveryResponse, error) {
 	variables := map[string]interface{}{
-		"size": pageSize,
-		"from": from,
+		"size":  pageSize,
+		"from":  from,
 		"query": map[string]interface{}{},
 		"filter": map[string]interface{}{
 			"bool": map[string]interface{}{
@@ -310,7 +320,7 @@ func fetchPage(client *http.Client, csrfToken string, from int) (discoveryRespon
 	req.Header.Set("X-Product-Feature", "search")
 	req.Header.Set("Referer", pageURL)
 
-	resp, err := client.Do(req)
+	resp, err := doRequest(client, req)
 	if err != nil {
 		return discoveryResponse{}, err
 	}
@@ -331,6 +341,9 @@ func fetchPage(client *http.Client, csrfToken string, from int) (discoveryRespon
 	if len(parsed.Errors) > 0 {
 		return discoveryResponse{}, fmt.Errorf("graphql retornou erro: %s", parsed.Errors[0].Message)
 	}
+	if parsed.Data == nil || parsed.Data.OpportunitiesSearch == nil || parsed.Data.OpportunitiesSearch.TotalCount == nil || *parsed.Data.OpportunitiesSearch.TotalCount < 0 || parsed.Data.OpportunitiesSearch.Nodes == nil {
+		return discoveryResponse{}, errors.New("resposta GraphQL sem resultados válidos")
+	}
 	return parsed, nil
 }
 
@@ -338,6 +351,7 @@ func fetchAllOpportunities(client *http.Client, csrfToken string) ([]opportunity
 	var all []opportunityNode
 	from := 0
 	total := -1
+	seen := map[string]bool{}
 
 	for total == -1 || from < total {
 		page, err := fetchPage(client, csrfToken, from)
@@ -345,12 +359,21 @@ func fetchAllOpportunities(client *http.Client, csrfToken string) ([]opportunity
 			return nil, fmt.Errorf("página from=%d: %w", from, err)
 		}
 		if total == -1 {
-			total = page.Data.OpportunitiesSearch.TotalCount
+			total = *page.Data.OpportunitiesSearch.TotalCount
 			logf("alvo: %d programas", total)
 		}
 		nodes := page.Data.OpportunitiesSearch.Nodes
-		if len(nodes) == 0 {
-			break
+		if len(nodes) == 0 && from < total {
+			return nil, fmt.Errorf("coleta incompleta: %d de %d programas", from, total)
+		}
+		for _, n := range nodes {
+			if n.Handle == "" || seen[n.Handle] {
+				return nil, errors.New("handle vazio ou duplicado na coleta")
+			}
+			seen[n.Handle] = true
+		}
+		if *page.Data.OpportunitiesSearch.TotalCount != total || from+len(nodes) > total {
+			return nil, errors.New("total de programas inconsistente durante paginação")
 		}
 		all = append(all, nodes...)
 		from += len(nodes)
@@ -401,7 +424,7 @@ func bootstrapState(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, seedState, 0o644); err != nil {
+	if err := saveState(path, probe); err != nil {
 		return err
 	}
 	logf("state não existia em %s — inicializado com seed embutido (%d programas)", path, len(probe))
@@ -419,6 +442,9 @@ func loadState(path string) (map[string]Program, error) {
 	state := map[string]Program{}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
+	}
+	if state == nil {
+		return nil, errors.New("estado JSON não pode ser null")
 	}
 	return state, nil
 }
@@ -475,19 +501,98 @@ func buildMessage(p Program) string {
 
 // ---------- envio ----------
 
+const requestTimeout = 30 * time.Second
+const retryBudget = 2 * time.Minute
+
+var notificationClient = &http.Client{Timeout: requestTimeout}
+
+// Bound both individual requests and the complete retry sequence. Never log
+// transport errors or response bodies: notification URLs contain credentials.
+func doRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), retryBudget)
+	// The caller reads the returned body, so cancel only when it closes it.
+	for attempt := 0; attempt < 3; attempt++ {
+		next := req.Clone(ctx)
+		if req.GetBody != nil {
+			var err error
+			next.Body, err = req.GetBody()
+			if err != nil {
+				cancel()
+				return nil, errors.New("não foi possível preparar requisição")
+			}
+		}
+		resp, err := client.Do(next)
+		retry := err != nil
+		if resp != nil {
+			retry = retry || resp.StatusCode == 429 || resp.StatusCode >= 500
+		}
+		if !retry {
+			resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+			return resp, nil
+		}
+		delay := time.Duration(1<<attempt) * time.Second
+		if resp != nil {
+			value := resp.Header.Get("Retry-After")
+			if seconds, e := strconv.Atoi(value); e == nil && seconds >= 0 {
+				if seconds > int(retryBudget/time.Second) {
+					delay = retryBudget
+				} else {
+					delay = time.Duration(seconds) * time.Second
+				}
+			} else if when, e := http.ParseTime(value); e == nil {
+				delay = time.Until(when)
+				if delay < 0 {
+					delay = 0
+				}
+			}
+			resp.Body.Close()
+		}
+		if attempt == 2 {
+			cancel()
+			return nil, errors.New("requisição falhou após 3 tentativas (rede, HTTP 429 ou 5xx)")
+		}
+		deadline, _ := ctx.Deadline()
+		if delay >= time.Until(deadline) {
+			cancel()
+			return nil, errors.New("Retry-After excede limite da execução; envio pendente")
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			cancel()
+			return nil, errors.New("tempo limite da requisição excedido")
+		case <-timer.C:
+		}
+	}
+	cancel()
+	return nil, errors.New("requisição falhou")
+}
+
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error { defer b.cancel(); return b.ReadCloser.Close() }
+
 func postJSON(url string, payload interface{}) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("URL de notificação inválida")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := doRequest(notificationClient, req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s retornou %d: %s", url, resp.StatusCode, truncate(string(b), 300))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("serviço de notificação retornou HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -538,34 +643,33 @@ func getenvInt(key string, fallback int) int {
 
 // ---------- main ----------
 
-func main() {
+func run() error {
 	statePath := getenv("STATE_PATH", "/data/seen_programs.json")
 	discordWebhook := os.Getenv("DISCORD_WEBHOOK_URL")
 	if discordWebhook == "" {
-		fmt.Fprintln(os.Stderr, "DISCORD_WEBHOOK_URL não configurado")
-		os.Exit(1)
+		return errors.New("DISCORD_WEBHOOK_URL não configurado")
 	}
 	telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 	telegramChatID := os.Getenv("TELEGRAM_CHAT_ID")
+	if (telegramToken == "") != (telegramChatID == "") {
+		return errors.New("configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID juntos")
+	}
 	minResponseEfficiency := getenvInt("MIN_RESPONSE_EFFICIENCY", 70)
 
 	client, err := newHTTPClient()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "erro criando client http: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("erro criando client http: %w", err)
 	}
 
 	logf("abrindo %s", pageURL)
 	csrfToken, err := fetchCSRFToken(client)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "erro obtendo csrf token: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("erro obtendo csrf token: %w", err)
 	}
 
 	nodes, err := fetchAllOpportunities(client, csrfToken)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "erro coletando oportunidades: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("erro coletando oportunidades: %w", err)
 	}
 	logf("%d programas coletados", len(nodes))
 
@@ -573,44 +677,77 @@ func main() {
 	logf("%d passam no filtro (Bounty + Wildcard + resposta >= %d%%)", len(candidates), minResponseEfficiency)
 
 	if err := bootstrapState(statePath); err != nil {
-		fmt.Fprintf(os.Stderr, "erro inicializando state: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("erro inicializando state: %w", err)
 	}
 
 	state, err := loadState(statePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "erro carregando state: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("erro carregando state: %w", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	var newPrograms []Program
+	var pending []string
 	for _, n := range candidates {
 		p := toProgram(n, now)
 		if existing, ok := state[p.Handle]; ok {
 			p.FirstSeen = existing.FirstSeen
+			p.Delivery = existing.Delivery
 		} else {
-			newPrograms = append(newPrograms, p)
+			p.Delivery = &Delivery{}
 		}
 		state[p.Handle] = p
 	}
-	logf("%d novos desde a última execução", len(newPrograms))
-
-	for _, p := range newPrograms {
+	// Persist the outbox before sending; include pending programs even if they
+	// no longer appear in today's filtered results.
+	if err := saveState(statePath, state); err != nil {
+		return err
+	}
+	for handle, p := range state {
+		if p.Delivery != nil && (!p.Delivery.Discord || (telegramToken != "" && !p.Delivery.Telegram)) {
+			pending = append(pending, handle)
+		}
+	}
+	logf("%d programas com notificações pendentes", len(pending))
+	failed := false
+	for _, handle := range pending {
+		p := state[handle]
 		msg := buildMessage(p)
-		if err := notifyDiscord(discordWebhook, msg); err != nil {
-			logf("  erro notificando discord (%s): %v", p.Handle, err)
+		if !p.Delivery.Discord {
+			if err := notifyDiscord(discordWebhook, msg); err != nil {
+				logf("erro notificando discord (%s): %v", handle, err)
+				failed = true
+			} else {
+				p.Delivery.Discord = true
+				if err := saveState(statePath, state); err != nil {
+					return err
+				}
+				logf("discord entregue: %s", handle)
+			}
 		}
-		if err := notifyTelegram(telegramToken, telegramChatID, msg); err != nil {
-			logf("  erro notificando telegram (%s): %v", p.Handle, err)
+		if telegramToken != "" && !p.Delivery.Telegram {
+			if err := notifyTelegram(telegramToken, telegramChatID, msg); err != nil {
+				logf("erro notificando telegram (%s): %v", handle, err)
+				failed = true
+			} else {
+				p.Delivery.Telegram = true
+				if err := saveState(statePath, state); err != nil {
+					return err
+				}
+				logf("telegram entregue: %s", handle)
+			}
 		}
-		logf("  notificado: %s", p.Name)
 		time.Sleep(1200 * time.Millisecond)
 	}
-
-	if err := saveState(statePath, state); err != nil {
-		fmt.Fprintf(os.Stderr, "erro salvando state: %v\n", err)
-		os.Exit(1)
+	if failed {
+		return errors.New("há notificações pendentes; serão tentadas na próxima execução")
 	}
 	logf("concluído")
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "erro: %v\n", err)
+		os.Exit(1)
+	}
 }

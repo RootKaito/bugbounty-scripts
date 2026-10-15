@@ -2,6 +2,7 @@ FROM golang:1.25-alpine AS build
 WORKDIR /app
 COPY go.mod ./
 COPY main.go ./
+COPY seed_state.json ./
 RUN CGO_ENABLED=0 go build -o /watch .
 
 FROM alpine:3.20
